@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -e
+
+if [ ! -e "setup.py" ]; then
+	echo "The script must be executed from within the repository's root directory."
+	exit
+fi
+
+export PYTHONPATH="`pwd`"
+ROOT="`pwd`"
+
+DOCS_DIR="`pwd`/docs"
+
+# ----------------------------------------------------
+
+echo "Building docs"
+
+mkdir -p docs/_static &>/dev/null
+cp diagram.png docs/_static/invalid_routes_reporter.png
+cp integration.png docs/_static/invalid_routes_reporter_integration.png
+
+# README.rst
+DST_FILE="README.rst"
+echo ".. DO NOT EDIT: this file is automatically created by /utils/build_doc" > $DST_FILE
+cat docs/README.txt >> $DST_FILE
+echo "" >> $DST_FILE
+echo ".. image:: diagram.png" >> $DST_FILE
+echo "" >> $DST_FILE
+echo "For more information: https://invalidroutesreporter.readthedocs.io" >> $DST_FILE
+
+# ----------------------------------------------------
+
+echo "Publishing docs via HTTP"
+
+echo "cd $DOCS_DIR ; make html ; cd _build/html/ ; python -m SimpleHTTPServer 8000 ; cd $ROOT"
+cd $DOCS_DIR
+make html
+cd _build/html/
+python -m SimpleHTTPServer 8000
+cd $ROOT
