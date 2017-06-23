@@ -23,11 +23,14 @@ cp integration.png docs/_static/invalid_routes_reporter_integration.png
 # README.rst
 DST_FILE="README.rst"
 echo ".. DO NOT EDIT: this file is automatically created by /utils/build_doc" > $DST_FILE
+cat docs/README_header.txt >> $DST_FILE
 cat docs/README.txt >> $DST_FILE
 echo "" >> $DST_FILE
 echo ".. image:: diagram.png" >> $DST_FILE
 echo "" >> $DST_FILE
 echo "For more information: https://invalidroutesreporter.readthedocs.io" >> $DST_FILE
+echo "" >> $DST_FILE
+cat docs/FOOTER.txt >> $DST_FILE
 
 # ----------------------------------------------------
 

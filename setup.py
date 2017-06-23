@@ -3,6 +3,37 @@ from os.path import abspath, dirname, join
 from setuptools import setup, find_packages
 import sys
 
+"""
+New release procedure
+
+- nosetests -vs tests/
+
+- set __version__ on pierky/invalidroutesreporter/version.py
+
+- set __version__ on scripts/invalidroutesreporter.py
+
+  (ugly solution to keep the script a standalone .py
+   while considering https://pex.readthedocs.io)
+
+- edit CHANGES.rst
+
+- verify RST syntax is ok
+    python setup.py --long-description | rst2html.py --strict
+
+- build and verify docs
+    cd docs ; make html ; python -m SimpleHTTPServer 8000 ; cd ..
+
+- new files to be added to MANIFEST.in?
+
+- python setup.py sdist
+
+- twine upload dist/*
+
+- git push
+
+- edit new release on GitHub
+"""
+
 __version__ = None
 
 # Allow setup.py to be run from any path
@@ -42,6 +73,8 @@ setup(
 
     install_requires=install_requires,
     tests_require=[
+        "nose",
+        "mock",
     ],
     test_suite="nose.collector",
 

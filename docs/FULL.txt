@@ -1,7 +1,7 @@
 Installation
 ++++++++++++
 
-This script has no external dependencies, so it can be fetched from GitHub and used or installed using pip:
+This script has no external dependencies, so it can be fetched from GitHub or installed using pip:
 
 .. code-block:: console
 
@@ -16,20 +16,36 @@ This script has no external dependencies, so it can be fetched from GitHub and u
 How it works
 ++++++++++++
 
-1. The script uses an user configurable regular expression pattern to determine if the routes it receives from the route server carry the expected reject reason BGP community, then it extracts the reason code from them.
-   
-   Example:
+The script is supposed to be executed by ExaBGP in order to receive and process routes that route servers announce it.
 
-   - pattern: ``^65520:(\d+)$``
-   - route tagged with: ``65520:7``
-   - resulting reason code: ``7`` (that means "Invalid ASN in AS_PATH")
+Two BGP communities are used to determine:
+
+1. if the routes it receives are considered as invalid (*reject community*)
+
+2. optionally, the reason that led these routes to be considered so (*reject reason community*).
+
+Both these BGP communities can be configured by the user: the first must be given in a straight form (example: ``65520:0``) while the second one needs to be set using a regular expression pattern that matches the reason code (example: ``^65520:(\d+)$``).
+Since the matching is done on a textual representation basis, standard, extended and large BGP communities can be used indiscriminately.
+
+Example:
+
+- reject community: ``65520:0``
+- reject reason community: ``^65520:(\d+)$``
+- route tagged with: ``65520:0, 65520:7``
+- resulting reason code: ``7`` (that, in `ARouteServer`_, it means "Invalid ASN in AS_PATH")
+
+So...
+
+1. The script looks for the *reject community* to determine if the route it received from the route servers is considered as invalid.
+
+2. If the *reject community* is found and a *reject reason community* has been configured it extracts the reject reason code from the route.
 
    If used in conjunction with `ARouteServer`_, the list of codes and their meaning is reported within the `Reject policy and invalid routes tracking <https://arouteserver.readthedocs.io/en/latest/CONFIG.html#reject-policy>`_ section of ARouteServer's docs.
 
-2. For those routes that are tagged with a reject reason BGP community, it performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
+3. For those routes that are tagged with a *reject community*, it performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
    The result of this lookup identifies the *recipients* of the alert that will be generated.
 
-   .. note:: Please note that this lookup's result does not always determine the network that announced the invalid route: for example, in case of a network that announces a route with an unauthorized left-most ASN or NEXT_HOP address the result of the lookup will be the networks of which the ASN and the peer's address have been used.
+   .. note:: Please note that this lookup's result does not always determine the real network that announced the invalid route: for example, in case of a network that announces a route with an unauthorized left-most ASN or NEXT_HOP address the result of the lookup will be the networks of which the ASN and the peer's address have been used.
 
    Example of the networks list:
 
@@ -50,14 +66,27 @@ How it works
         }
       }
 
-3. The invalid routes collected by the script are added to a buffer for each involved network; finally, the script triggers some actions on the basis of the *alerters* that have been configured. It can send an email or simply log the route on a file.
+4. For each involved network, the invalid routes collected by the script are added to a buffer; finally, the script triggers some actions on the basis of the *alerters* that have been configured. It can send an email or simply log the route on a file.
+
+In order to convert numeric reject reason codes into a textual description the ``--reject-reasons-file`` command line argument must be used to provide a JSON file containing the conversion matrix:
+
+.. code-block:: javascript
+
+  {
+    "1": "Invalid AS_PATH length",
+    "2": "Prefix is bogon",
+    "3": "Prefix is in global blacklist",
+    ...
+  }
+
+The reason code/description matrix used by `ARouteServer`_ is provided within the ``example/arouteserver_reject_reasons.json`` file. 
 
 Usage
 +++++
 
-The script must be executed as an ExaBGP process and configured to receive JSON parsed update messages.
+The script must be executed as an ExaBGP process configured to receive JSON parsed update messages.
 The first mandatory argument is the path to the *networks* configuration file; then, one or more *alerter* configuration files must be supplied.
-The default regular expression pattern used to determine reject BGP communities value is ``^65520:(\d+)$``: to set it the ``--reject-reason-pattern`` option can be used. For more options run ``./invalidroutesreporter.py --help``. 
+The default BGP communities values are ``65520:0`` for the *reject community* and ``^65520:(\d+)$`` for the *reject reason community*: to set them, the ``--reject-community`` and the ``--reject-reason-pattern`` command line arguments can be used. For more options run ``./invalidroutesreporter.py --help``. 
 
 An ExaBGP configuration example follows:
 
@@ -67,7 +96,7 @@ An ExaBGP configuration example follows:
 	   [...]
    
            process invalid_routes_reporter {
-                   run /etc/exabgp/invalidroutesreporter.py /etc/exabgp/networks.json /etc/exabgp/log.alerter.json /etc/exabgp/email.alerter.json
+                   run /etc/exabgp/invalidroutesreporter.py /etc/exabgp/networks.json /etc/exabgp/log.alerter.json /etc/exabgp/email.alerter.json;
                    encoder json;
                    receive {
                            update;
@@ -187,7 +216,9 @@ Depending on the value of ``ALERTER_TYPE``, the following *alerters* can be conf
        // logged.
        // Available macros:
        // - id: the recipient ID
-       // - ts: the timestamp the route is received by the script
+       // - ts: the timestamp the route is received by the script,
+       //       seconds since epoch
+       // - ts_iso8601: as above, in ISO 8601 format
        // - prefix, next_hop, as_path: route's attributes
        // - reject_reason_code: the code of the reason for which the
        //   route has been considered as invalid by the route server
@@ -366,7 +397,7 @@ Integration with ARouteServer
                }
        
                process invalid_routes_reporter {
-                       run /etc/exabgp/invalidroutesreporter.py /etc/exabgp/networks.json /etc/exabgp/log.alerter.json /etc/exabgp/email.alerter.json
+                       run /etc/exabgp/invalidroutesreporter.py /etc/exabgp/networks.json /etc/exabgp/log.alerter.json /etc/exabgp/email.alerter.json;
                        encoder json;
                        receive {
                                update;
@@ -385,5 +416,3 @@ Status
 ++++++
 
 Currently this tool is in a beta status and needs testing. Please consider this before using it in production!
-
-.. _ARouteServer: https://github.com/pierky/arouteserver

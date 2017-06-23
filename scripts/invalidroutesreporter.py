@@ -16,6 +16,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
+import copy
+from datetime import datetime
 from email.mime.text import MIMEText
 import json
 import logging
@@ -23,54 +25,70 @@ from logging.config import fileConfig, dictConfig
 from Queue import Queue, Empty, Full
 import re
 import smtplib
+import struct
 import sys
 import threading
 import time
 
-DEFAULT_REJECT_REASON_RE_PATTERN = "^65520:(\d+)$"
+DEFAULT_REJECT_COMMUNITY_PATTERN = "65520:0"
+DEFAULT_REJECT_REASON_COMMUNITY_PATTERN = "^65520:(\d+)$"
+
+__version__ = "0.1.0"
+COPYRIGHT_YEAR = 2017
 
 class UpdatesProcessingThread(threading.Thread):
 
     def __init__(self, updates_q, alerts_queues,
-                 reject_reason_pattern, networks_cfg):
+                 reject_comm, reject_reason_comm_pattern,
+                 networks_cfg):
         threading.Thread.__init__(self)
+
+        self.name = "MessagesProcessing"
 
         self.updates_q = updates_q
         self.alerts_queues = alerts_queues
 
-        self.reject_reason_pattern = re.compile(reject_reason_pattern)
+        self.reject_comm = reject_comm
+        if reject_reason_comm_pattern:
+            self.reject_reason_comm_pattern = re.compile(reject_reason_comm_pattern)
+        else:
+            self.reject_reason_comm_pattern = None
+
         self.networks_cfg = networks_cfg
 
         self.quit_flag = False
+
+    def reject_comm_found(self, std_comms, lrg_comms, ext_comms):
+        for fmt in (std_comms, lrg_comms, ext_comms):
+            if not fmt or len(fmt) == 0:
+                continue
+
+            for comm in fmt:
+                if comm == self.reject_comm:
+                    return True
+        return False
 
     def get_reject_reason(self, std_comms, lrg_comms, ext_comms):
         for fmt in (std_comms, lrg_comms, ext_comms):
             if not fmt or len(fmt) == 0:
                 continue
 
-            reject_cause_zero_found = False
-            reject_reason = None
-
             for comm in fmt:
-                match = self.reject_reason_pattern.match(comm)
-
-                if not match:
+                if comm == self.reject_comm:
                     continue
 
-                reason = int(match.group(1))
-                if reason == 0:
-                    reject_cause_zero_found = True
-                else:
-                    reject_reason = reason
+                match = self.reject_reason_comm_pattern.match(comm)
 
-                if reject_cause_zero_found and reject_reason:
-                    return reject_reason
+                if match:
+                    return int(match.group(1))
 
     def get_recipient_ids(self, as_path, next_hop):
         ids = []
 
         if as_path:
-            ids.append("AS{}".format(as_path[0]))
+            asn = "AS{}".format(as_path[0])
+            if asn in self.networks_cfg:
+                ids.append(asn)
 
         if next_hop:
             for asn in self.networks_cfg:
@@ -79,13 +97,15 @@ class UpdatesProcessingThread(threading.Thread):
                     if next_hop in [n.lower() for n in neighbors]:
                         ids.append(asn)
 
-        return ids
+        return list(set(ids))
 
     def process_route(self, prefix, next_hop, as_path, std_comms, lrg_comms, ext_comms):
-        reject_reason = self.get_reject_reason(std_comms, lrg_comms, ext_comms)
-
-        if not reject_reason:
+        if not self.reject_comm_found(std_comms, lrg_comms, ext_comms):
             return
+
+        reject_reason = None
+        if self.reject_reason_comm_pattern:
+            reject_reason = self.get_reject_reason(std_comms, lrg_comms, ext_comms)
 
         recipient_ids = self.get_recipient_ids(as_path, next_hop)
 
@@ -102,13 +122,79 @@ class UpdatesProcessingThread(threading.Thread):
         }
         logging.debug("Enqueuing route: {}".format(str(route)))
         for alerts_q in self.alerts_queues:
-            alerts_q.put(route)
+            alerts_q.put(copy.deepcopy(route))
 
     @staticmethod
-    def comms_to_str(lst):
+    def std_comms_to_str(lst):
         if not lst or len(lst) == 0:
             return []
+        for comm in lst:
+            try:
+                if len(comm) != 2:
+                    raise ValueError()
+                if not all(isinstance(part, int) for part in comm):
+                    raise ValueError()
+            except ValueError:
+                logging.error("Invalid standard community: {}; "
+                              "[x, y] expected".format(comm))
         return [":".join(map(str, parts)) for parts in lst]
+
+    @staticmethod
+    def lrg_comms_to_str(lst):
+        if not lst or len(lst) == 0:
+            return []
+        for comm in lst:
+            try:
+                if len(lst) != 3:
+                    raise ValueError()
+                if not all(isinstance(part, int) for part in comm):
+                    raise ValueError()
+            except ValueError:
+                logging.error("Invalid large community: {}; "
+                              "[x, y, z] expected".format(comm))
+        return [":".join(map(str, parts)) for parts in lst]
+
+    @staticmethod
+    def ext_comms_to_str(lst):
+        if not lst or len(lst) == 0:
+            return []
+        res = []
+        for comm in lst:
+            if not isinstance(comm, int):
+                logging.error("Invalid extended community: {}; "
+                              "[x] expected".format(comm))
+            buff = struct.pack("!Q", comm)
+            type_h, type_l = struct.unpack_from("!BB", buff, 0)
+
+            kind, part1, part2 = (None, None, None)
+            fmt = None
+
+            if type_h in [0x00, 0x40]:
+                # 2 + 4
+                fmt = "!HI"
+            elif type_h in [0x01, 0x41]:
+                # 4 + 2
+                fmt = "!IH"
+            elif type_h in [0x02, 0x42]:
+                # 4 + 2
+                fmt = "!IH"
+            else:
+                logging.error("Unhandled extended community "
+                              "type for {}: {}".format(comm, type_h))
+
+            if type_l == 0x02:
+                kind = "rt"
+            elif type_l == 0x03:
+                kind = "ro"
+            else:
+                logging.error("Unhandled extended community "
+                              "subtype for {}: {}".format(comm, type_l))
+
+            if kind and fmt:
+                part1, part2 = struct.unpack_from(fmt, buff, 2)
+                res.append("{}:{}:{}".format(kind, part1, part2))
+
+        return res
 
     def run(self):
         while True:
@@ -136,9 +222,9 @@ class UpdatesProcessingThread(threading.Thread):
                         for next_hop in announce[afi_safi]:
                             for prefix in announce[afi_safi][next_hop]:
                                 self.process_route(prefix, next_hop, as_path,
-                                                   self.comms_to_str(std_comms),
-                                                   self.comms_to_str(lrg_comms),
-                                                   self.comms_to_str(ext_comms))
+                                                   self.std_comms_to_str(std_comms),
+                                                   self.lrg_comms_to_str(lrg_comms),
+                                                   self.ext_comms_to_str(ext_comms))
 
                 self.updates_q.task_done()
             except Empty:
@@ -148,30 +234,19 @@ class UpdatesProcessingThread(threading.Thread):
 
 class NotifierThread(threading.Thread):
 
-    REJECT_REASONS = {
-        "1": "Invalid AS_PATH length",
-        "2": "Prefix is bogon",
-        "3": "Prefix is in global blacklist",
-        "4": "Invalid AFI",
-        "5": "Invalid NEXT_HOP",
-        "6": "Invalid left-most ASN",
-        "7": "Invalid ASN in AS_PATH",
-        "8": "Transit-free ASN in AS_PATH",
-        "9": "Origin ASN not in IRRDB AS-SETs",
-        "10": "IPv6 prefix not in global unicast space",
-        "11": "Prefix is in client blacklist",
-        "12": "Prefix not in IRRDB AS-SETs",
-        "13": "Invalid prefix length",
-        "14": "RPKI INVALID route",
-    }
+    THREAD_TYPE = "Notifier"
 
-    def __init__(self, alerts_q, alerter_cfg):
+    def __init__(self, alerts_q, alerter_cfg, reject_reasons):
         threading.Thread.__init__(self)
+
+        self.name = self.THREAD_TYPE
 
         self.alerts_q = alerts_q
         self.quit_flag = False
 
         self.cfg = alerter_cfg
+
+        self.reject_reasons = reject_reasons
 
         self.data = {}
         for recipient_id in self.cfg["recipients"]:
@@ -195,6 +270,7 @@ class NotifierThread(threading.Thread):
                     )
                 },
                 "last_flush": None,
+                "startup": int(time.time()),
                 "routes": []
             }
 
@@ -221,6 +297,10 @@ class NotifierThread(threading.Thread):
 
             if len(recipient["routes"]) < recipient["config"]["max_routes"]:
                 recipient["routes"].append(route)
+            else:
+                logging.debug("Discarding route {} for {}: buffer full ".format(
+                    route["prefix"], recipient_id
+                ))
 
     def _flush_recipient(self, recipient):
         raise NotImplementedError()
@@ -244,27 +324,40 @@ class NotifierThread(threading.Thread):
             if routes_cnt == 0:
                 continue
 
-            if recipient["config"]["min_wait"] and recipient["last_flush"]:
-                if recipient["last_flush"] + recipient["config"]["min_wait"] > ts:
-                    logging.debug("Skipping {} for min_wait".format(recipient_id))
+            last_time = recipient["last_flush"] or 0
+            if recipient["config"]["min_wait"]:
+                if last_time + recipient["config"]["min_wait"] > ts:
+                    logging.debug("Skipping {} for min_wait ({}, {})".format(
+                        recipient_id, recipient["config"]["min_wait"], last_time
+                    ))
                     continue
 
             if routes_cnt >= recipient["config"]["max_routes"]:
+                logging.debug("Flushing {} because routes_cnt ({}) >= max_routes ({})".format(
+                    recipient_id, routes_cnt, recipient["config"]["max_routes"]
+                ))
                 self.flush_recipient(recipient)
                 continue
 
+            last_time = recipient["last_flush"] or recipient["startup"]
             if recipient["config"]["max_wait"]:
-                if not recipient["last_flush"] or \
-                    recipient["last_flush"] + recipient["config"]["max_wait"] < ts:
-
+                if last_time + recipient["config"]["max_wait"] <= ts:
+                    logging.debug("Flushing {} because max_wait ({}, {})".format(
+                        recipient_id, recipient["config"]["max_wait"], last_time
+                    ))
                     self.flush_recipient(recipient)
                     continue
 
     def get_reject_reason_descr(self, reason_code):
-        if str(reason_code) in self.REJECT_REASONS:
-            return self.REJECT_REASONS[str(reason_code)]
-        else:
-            return "Unknown reason code {}".format(reason_code)
+        if reason_code:
+            if self.reject_reasons:
+                if str(reason_code) in self.reject_reasons:
+                    return self.reject_reasons[str(reason_code)]
+                else:
+                    return "Unknown reject reason code {}".format(reason_code)
+            else:
+                return "Reject reason code {}".format(reason_code)
+        return "Reject reason code not found"
 
     def run(self):
         while True:
@@ -279,6 +372,8 @@ class NotifierThread(threading.Thread):
             self.flush()
 
 class EMailNotifierThread(NotifierThread):
+
+    THREAD_TYPE = "EMail"
 
     def __init__(self, *args, **kwargs):
         super(EMailNotifierThread, self).__init__(*args, **kwargs)
@@ -399,6 +494,8 @@ class EMailNotifierThread(NotifierThread):
 
 class LoggerThread(NotifierThread):
 
+    THREAD_TYPE = "Logger"
+
     def __init__(self, *args, **kwargs):
         super(LoggerThread, self).__init__(*args, **kwargs)
 
@@ -418,7 +515,7 @@ class LoggerThread(NotifierThread):
             if "template" in self.cfg:
                 self.template = self.cfg["format"]
             else:
-                self.template = ("{id},{ts},{prefix},{as_path},{next_hop},"
+                self.template = ("{id},{ts_iso8601},{prefix},{as_path},{next_hop},"
                                  "{reject_reason_code},{reject_reason}")
 
             if len(self.cfg["recipients"]) > 1 and \
@@ -462,7 +559,9 @@ class LoggerThread(NotifierThread):
                 data = route.copy()
                 data.update({
                     "id": recipient["id"],
-                    "reject_reason": reject_reason
+                    "reject_reason": reject_reason,
+                    "as_path": " ".join(map(str, data["as_path"])),
+                    "ts_iso8601": datetime.fromtimestamp(data["ts"]).isoformat()
                 })
                 self.file.write(self.template.format(**data) + "\n")
                 self.file.flush()
@@ -515,25 +614,57 @@ def read_networks_config(path):
 
     return cfg
 
-def check_re_pattern(args):
-    if args.re_pattern[0] != "^":
+def read_reject_reasons(path):
+    try:
+        with open(path, "r") as f:
+            reasons = json.load(f)
+    except Exception as e:
+        logging.error(
+            "Can't read reject reasons file from '{}': {}".format(
+                path, str(e)
+            ), exc_info=True)
+        return
+
+    err = "Error in the reject reasons file '{}': ".format(path)
+    for k in reasons:
+        if not re.match("^\d+$", k):
+            logging.error("invalid reject reason code: '{}'; "
+                          "keys must be strings representing the "
+                          "numerical identifier of reject reasons.".format(k))
+            return
+
+        if not isinstance(reasons[k], (str,unicode)):
+            logging.error("invalid reject reason description for code '{}'; "
+                          "the format must be "
+                          "\"<reason_code>\": \"<description>\".".format(k))
+            return
+
+    return reasons
+
+def check_re_pattern(re_pattern_str):
+    if re_pattern_str[0] != "^":
         raise ValueError(
             "the first character must be a caret (^) "
             "in order to match the start of the "
             "textual representation of any BGP community"
         )
-    if args.re_pattern[-1] != "$":
+
+    if re_pattern_str[-1] != "$":
         raise ValueError(
             "the last character must be a dollar ($) "
             "in order to match the end of the "
             "textual representation of any BGP community"
         )
+
     try:
-        re_pattern = re.compile(args.re_pattern)
+        re_pattern = re.compile(re_pattern_str)
     except Exception as e:
         raise ValueError(
-            "can't compile the regex pattern: {}".format(str(e))
+            "can't compile the regex pattern '{}': {}".format(
+                re_pattern_str, str(e)
+            )
         )
+
     if re_pattern.groups != 1:
         raise ValueError(
             "the pattern must contain 1 group to match "
@@ -541,14 +672,68 @@ def check_re_pattern(args):
             "the last part of any BGP community"
         )
 
+def process_exabgp_line(line):
+    """Returns JSON object OR True if line can be skipped OR None if error"""
+
+    try:
+        obj = json.loads(line)
+    except Exception as e:
+        logging.error("Error while parsing JSON message: "
+                      "{}".format(str(e)))
+        return
+
+    if not "exabgp" in obj:
+        logging.error("Unexpected JSON format: 'exabgp' key not found")
+        return
+
+    if obj["type"] != "update":
+        return True
+
+    if "neighbor" not in obj:
+        logging.error("Unexpected JSON format: 'neighbor' key not found")
+        return
+    neighbor = obj["neighbor"]
+
+    if "message" not in neighbor:
+        logging.error("Unexpected JSON format: 'message' key not found")
+        return
+    message = neighbor["message"]
+
+    if "update" not in message:
+        logging.error("Unexpected JSON format: 'update' key not found")
+        return
+    update = message["update"]
+
+    if "announce" not in update:
+        logging.error("Unexpected JSON format: 'announce' key not found")
+        return
+    announce = update["announce"]
+
+    ip_ver = 6 if ":" in neighbor["ip"] else 4
+
+    if "ipv{} unicast".format(ip_ver) not in announce:
+        logging.error("Unexpected JSON format: 'ipv{} unicast' "
+                      "key not found".format(ip_ver))
+        return
+
+    return obj
+
 def run(args):
     try:
-        check_re_pattern(args)
+        check_re_pattern(args.reject_reason_pattern)
     except ValueError as e:
-        logging.error("Invalid reject reason pattern: {}".format(str(e)))
+        logging.error("Invalid reject reason BGP community pattern: {}".format(str(e)))
         return False
 
+    reject_reasons = None
+    if args.reject_reasons_file:
+        reject_reasons = read_reject_reasons(args.reject_reasons_file)
+        if not reject_reasons:
+            return False
+
     networks_cfg = read_networks_config(args.networks_config_file)
+    if not networks_cfg:
+        return False
 
     updates_q = Queue()
     alerts_queues = []
@@ -571,7 +756,7 @@ def run(args):
             raise NotImplementedError("Notifier class unknown")
 
         try:
-            notifier = notifier_class(alerts_q, alerter_cfg)
+            notifier = notifier_class(alerts_q, alerter_cfg, reject_reasons)
         except Exception as e:
             logging.error(
                 "Error while creating the notifier from '{}': {}".format(
@@ -585,8 +770,11 @@ def run(args):
     for notifier in notifier_threads:
         notifier.start()
 
-    collector = UpdatesProcessingThread(updates_q, alerts_queues,
-                                        args.re_pattern, networks_cfg)
+    collector = UpdatesProcessingThread(
+        updates_q, alerts_queues,
+        args.reject_community, args.reject_reason_pattern,
+        networks_cfg
+    )
     collector.start()
 
     empty_lines_counter = 0
@@ -608,68 +796,21 @@ def run(args):
                 continue
             empty_lines_counter = 0
 
-            try:
-                obj = json.loads(line)
-            except Exception as e:
-                logging.error("Error while parsing JSON message: "
-                              "{}".format(str(e)))
+            obj = process_exabgp_line(line)
+
+            if obj is None:
                 errors_counter += 1
                 if errors_counter >= args.max_error_cnt:
                     break
                 continue
-
-            if not "exabgp" in obj:
-                logging.error("Unexpected JSON format: 'exabgp' key not found")
-                errors_counter += 1
-                if errors_counter >= args.max_error_cnt:
-                    break
+            if obj is True:
                 continue
 
-            if obj["type"] != "update":
-                continue
-
-            if "neighbor" not in obj:
-                logging.error("Unexpected JSON format: 'neighbor' key not found")
-                errors_counter += 1
-                if errors_counter >= args.max_error_cnt:
-                    break
-                continue
             neighbor = obj["neighbor"]
-
-            ip_ver = 6 if ":" in neighbor["ip"] else 4
-
-            if "message" not in neighbor:
-                logging.error("Unexpected JSON format: 'message' key not found")
-                errors_counter += 1
-                if errors_counter >= args.max_error_cnt:
-                    break
-                continue
             message = neighbor["message"]
-
-            if "update" not in message:
-                logging.error("Unexpected JSON format: 'update' key not found")
-                errors_counter += 1
-                if errors_counter >= args.max_error_cnt:
-                    break
-                continue
             update = message["update"]
-
-            if "announce" not in update:
-                logging.error("Unexpected JSON format: 'announce' key not found")
-                errors_counter += 1
-                if errors_counter >= args.max_error_cnt:
-                    break
-                continue
             announce = update["announce"]
-
-            if "ipv{} unicast".format(ip_ver) not in announce:
-                logging.error("Unexpected JSON format: 'ipv{} unicast' "
-                              "key not found".format(ip_ver))
-                errors_counter += 1
-                if errors_counter >= args.max_error_cnt:
-                    break
-
-                continue
+            ip_ver = 6 if ":" in neighbor["ip"] else 4
 
             if "null" in announce["ipv{} unicast".format(ip_ver)] and \
                 "eor" in announce["ipv{} unicast".format(ip_ver)]["null"]:
@@ -716,9 +857,12 @@ def main():
        description="Invalid routes reporter. "
                    "To be used as an ExaBGP process to elaborate "
                    "UPDATE messages in JSON encoded parsed format.",
+       prog="InvalidRoutesReporter",
        epilog="Copyright (c) {} - Pier Carlo Chiodi - "
-              "https://pierky.com".format(2017)
+              "https://pierky.com".format(COPYRIGHT_YEAR)
     )
+    parser.add_argument("--version", action="version",
+                        version="%(prog)s {}".format(__version__))
 
     parser.add_argument(
         "networks_config_file",
@@ -731,19 +875,58 @@ def main():
         help="One or more alerter configuration file(s)."
     )
 
-    default = DEFAULT_REJECT_REASON_RE_PATTERN
-    parser.add_argument(
-        "-r", "--reject-reason-pattern",
+    group = parser.add_argument_group(
+        title="Configuration of BGP communities and reject reasons",
+        description="This script expects to receive routes that are "
+                    "tagged with a 'reject BGP community', that means that "
+                    "the route is invalid. If this BGP community is "
+                    "found, the script (optionally) tries to determine "
+                    "the reason that led that route to be considered "
+                    "as invalid: this is done by looking for an additional "
+                    "'reject reason BGP community' using a regular expression "
+                    "pattern that matches the 'reason code', and a 'reject "
+                    "reasons file' where the mapping between reasons' code "
+                    "and description is provided. BGP communities are "
+                    "represented using - and thus expected to be matched by - "
+                    "the following patterns: 'x:y' (std), 'x:y:z' (lrg), "
+                    "'(rt|ro):x:y' (ext)."
+    )
+
+    default = DEFAULT_REJECT_COMMUNITY_PATTERN
+    group.add_argument(
+        "--reject-community",
+        help="The reject BGP (standard|large|extended) community. "
+             "Default: {}".format(default),
+        default=default,
+        dest="reject_community"
+    )
+
+    default = DEFAULT_REJECT_REASON_COMMUNITY_PATTERN
+    group.add_argument(
+        "--reject-reason-pattern",
         help="Regular expression pattern used to extract the "
-             "reject reason from the (standard|large|extended) "
+             "reject reason code from the (standard|large|extended) "
              "BGP communities. "
              "Default: {}".format(default),
         default=default,
-        dest="re_pattern"
+        dest="reject_reason_pattern"
+    )
+
+    group.add_argument(
+        "--reject-reasons-file",
+        help="The file containing the description of the reject "
+             "reasons codes. Used only if --reject-reason-pattern "
+             "is provided. If missing, the reject reason "
+             "description will be set to 'Reject reason code X'.",
+        dest="reject_reasons_file"
+    )
+
+    group = parser.add_argument_group(
+        title="UPDATE messages processing options"
     )
 
     default = 100
-    parser.add_argument(
+    group.add_argument(
         "--max-error-cnt",
         type=int,
         help="While processing routes from ExaBGP, quit if the "
@@ -754,7 +937,7 @@ def main():
     )
 
     default = False
-    parser.add_argument(
+    group.add_argument(
         "-w", "--wait-for-first-eor",
         action="store_true",
         help="Start processing routes only after the first EOR "
@@ -764,14 +947,18 @@ def main():
         dest="wait_for_first_eor"
     )
 
-    parser.add_argument(
+    group = parser.add_argument_group(
+        title="Logging options"
+    )
+
+    group.add_argument(
         "--logging-config-file",
         help="Logging configuration file, in Python fileConfig() format ("
             "https://docs.python.org/2/library/logging.config.html"
             "#configuration-file-format)",
         dest="logging_config_file")
 
-    parser.add_argument(
+    group.add_argument(
         "--logging-level",
         help="Logging level. Overrides any configuration given in the "
              "logging configuration file.",
@@ -790,6 +977,8 @@ def main():
                 "{}: {}".format(args.logging_config_file, str(e))
             )
         return
+    else:
+        logging.basicConfig(format="%(asctime)s, %(levelname)s, %(threadName)s: %(message)s")
 
     if args.logging_level:
         dictConfig({
@@ -805,4 +994,5 @@ def main():
     else:
         sys.exit(1)
 
-main()
+if __name__ == '__main__':
+    main()
