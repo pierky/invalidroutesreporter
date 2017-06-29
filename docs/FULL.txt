@@ -16,68 +16,58 @@ This script has no external dependencies, so it can be fetched from GitHub or in
 How it works
 ++++++++++++
 
-The script is supposed to be executed by ExaBGP in order to receive and process routes that route servers announce it.
+The script is supposed to be executed by ExaBGP in order to receive and process routes that route servers announce to it.
 
-Two BGP communities are used to determine:
+Three BGP communities are used to determine:
 
-1. if the routes it receives are considered as invalid (*reject community*)
+1. if the routes it receives are considered as invalid (*reject-community*),
 
-2. optionally, the reason that led these routes to be considered so (*reject reason community*).
+2. optionally, the reason that led these routes to be considered so (*reject-reason-community*),
 
-Both these BGP communities can be configured by the user: the first must be given in a straight form (example: ``65520:0``) while the second one needs to be set using a regular expression pattern that matches the reason code (example: ``^65520:(\d+)$``).
+3. optionally, the ASN of the peer that actually announced the routes (*rejected-route-announced-by-community*).
+
+In particular, the *rejected-route-announced-by-community* is supposed to be added by the route server on the basis of the BGP session it has toward every client and to be set with the ASN of the peer.
+
+All these BGP communities can be configured by the user: the first one must be given in a straight form (example: ``65520:0``) while the other ones need to be set using a regular expression pattern that matches, respectively, the reason code (example: ``^65520:(\d+)$``) and the ASN of the network that announced the invalid routes (example: ``^rt:65520:(\d+)$``).
 Since the matching is done on a textual representation basis, standard, extended and large BGP communities can be used indiscriminately.
 
 Example:
 
-- reject community: ``65520:0``
-- reject reason community: ``^65520:(\d+)$``
-- route tagged with: ``65520:0, 65520:7``
+- reject-community: ``65520:0``
+- reject-reason-community: ``^65520:(\d+)$``
+- rejected-route-announced-by-community: ``^rt:65520:(\d+)$``
+- route tagged with: ``65520:0, 65520:7, rt:65520:666``
 - resulting reason code: ``7`` (that, in `ARouteServer`_, it means "Invalid ASN in AS_PATH")
+- resulting announcing ASN: ``666``
 
 So...
 
-1. The script looks for the *reject community* to determine if the route it received from the route servers is considered as invalid.
+1. The script looks for the *reject-community* to determine if the route it received from the route servers is considered as invalid.
 
-2. If the *reject community* is found and a *reject reason community* has been configured it extracts the reject reason code from the route.
+2. If the *reject-community* is found and a *reject-reason-community* has been configured it extracts the reject reason code from the route.
 
    If used in conjunction with `ARouteServer`_, the list of codes and their meaning is reported within the `Reject policy and invalid routes tracking <https://arouteserver.readthedocs.io/en/latest/CONFIG.html#reject-policy>`_ section of ARouteServer's docs.
 
-3. For those routes that are tagged with a *reject community*, it performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
+3. For those routes that are tagged with a *reject-community*, it performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
    The result of this lookup identifies the *recipients* of the alert that will be generated.
 
-   .. note:: Please note that this lookup's result does not always determine the real network that announced the invalid route: for example, in case of a network that announces a route with an unauthorized left-most ASN or NEXT_HOP address the result of the lookup will be the networks of which the ASN and the peer's address have been used.
+   .. note:: Please note that this lookup's result does not always determine the real network that announced the invalid route: for example, in case of a network that announces a route with an unauthorized left-most ASN or NEXT_HOP address the result of the lookup will be the networks of which the ASN and the peer's address have been used. Here the *rejected-route-announced-by-community* can help to determine the actual network that announced the route (see the next bullet).
 
    Example of the networks list:
 
-   .. code-block:: json
+   .. literalinclude:: ../example/networks.json
+      :language: json
 
-      {
-        "AS1": {
-          "neighbors": ["192.0.2.11", "2001:db8:1:1::11", "192.0.2.12", "2001:db8:1:1::12"]
-        },
-        "AS2": {
-          "neighbors": ["192.0.2.21", "2001:db8:1:1::21"]
-        },
-        "AS3": {
-          "neighbors": ["192.0.2.31", "2001:db8:1:1::31"]
-        },
-        "AS23" : {
-          "neighbors": ["192.0.2.23"]
-        }
-      }
+4. If the *rejected-route-announced-by-community* is configured, the script also tries to extract the announcing ASN from the communities attached to the route. If an ASN is found and it is also present in the *networks* list it is added to the *recipients* of the alert.
 
-4. For each involved network, the invalid routes collected by the script are added to a buffer; finally, the script triggers some actions on the basis of the *alerters* that have been configured. It can send an email or simply log the route on a file.
+5. For each involved network (*recipients*), the invalid routes collected by the script are added to a buffer; finally, the script triggers some actions on the basis of the *alerters* that have been configured. It can send an email or simply log the route on a file.
 
 In order to convert numeric reject reason codes into a textual description the ``--reject-reasons-file`` command line argument must be used to provide a JSON file containing the conversion matrix:
 
-.. code-block:: javascript
-
-  {
-    "1": "Invalid AS_PATH length",
-    "2": "Prefix is bogon",
-    "3": "Prefix is in global blacklist",
-    ...
-  }
+.. literalinclude:: ../example/arouteserver_reject_reasons.json
+   :language: javascript
+   :lines: 1-4
+   :append: ...
 
 The reason code/description matrix used by `ARouteServer`_ is provided within the ``example/arouteserver_reject_reasons.json`` file. 
 
@@ -86,7 +76,7 @@ Usage
 
 The script must be executed as an ExaBGP process configured to receive JSON parsed update messages.
 The first mandatory argument is the path to the *networks* configuration file; then, one or more *alerter* configuration files must be supplied.
-The default BGP communities values are ``65520:0`` for the *reject community* and ``^65520:(\d+)$`` for the *reject reason community*: to set them, the ``--reject-community`` and the ``--reject-reason-pattern`` command line arguments can be used. For more options run ``./invalidroutesreporter.py --help``. 
+The default BGP communities values are ``65520:0`` for the *reject-community* and ``^65520:(\d+)$`` for the *reject reason community*: to set them, the ``--reject-community`` and the ``--reject-reason-pattern`` command line arguments can be used. The ``--rejected-route-announced-by-pattern`` argument can be used to configure the *rejected-route-announced-by-community* pattern. For more options run ``./invalidroutesreporter.py --help``. 
 
 An ExaBGP configuration example follows:
 
@@ -223,7 +213,8 @@ Depending on the value of ``ALERTER_TYPE``, the following *alerters* can be conf
        // - reject_reason_code: the code of the reason for which the
        //   route has been considered as invalid by the route server
        // - reject_reason: the description of the reject_reason_code
-       "template": "{id},{ts},{prefix},{as_path},{next_hop},{reject_reason_code},{reject_reason}"
+       // - announced_by: the ASN of the peer that announced the route
+       "template": "{id},{ts},{prefix},{as_path},{next_hop},{reject_reason_code},{reject_reason},{announced_by}"
      }
 
 - ``email``: an email is sent to the recipients previously identified during the lookup.
@@ -257,6 +248,7 @@ Depending on the value of ``ALERTER_TYPE``, the following *alerters* can be conf
        //    - AS_PATH:  xxx
        //    - NEXT_HOP: xxx
        //    - reject reason: xxx
+       //    - announced by: xxx
        "template_file": "path to the template file used for the body",
 
        // Optional.
@@ -350,6 +342,8 @@ Integration with ARouteServer
          communities:
            reject_cause:
              std: 65520:dyn_val
+	   rejected_route_announced_by:
+	     ext: rt:65520:dyn_val
 
   - Content of ``/etc/bird/footer4.local`` on the route server:
   
@@ -381,30 +375,11 @@ Integration with ARouteServer
 
   - content of ``exabgp.conf``:
 
-    .. code:: 
+    .. literalinclude:: ../example/exabgp.conf
 
-       neighbor 192.0.2.2 {
-               router-id 192.0.2.99;
-               local-address 192.0.2.99;
-               local-as 65534;
-               peer-as 999;
-               group-updates false;
-               add-path receive;
-       
-               family {
-                       ipv4 unicast;
-                       ipv6 unicast;
-               }
-       
-               process invalid_routes_reporter {
-                       run /etc/exabgp/invalidroutesreporter.py /etc/exabgp/networks.json /etc/exabgp/log.alerter.json /etc/exabgp/email.alerter.json;
-                       encoder json;
-                       receive {
-                               update;
-                               parsed;
-                       }
-               }
-       }
+  - content of ``invalidroutesreporter.sh``:
+
+    .. literalinclude:: ../example/invalidroutesreporter.sh
 
 An integration diagram follows (click to enlarge).
 

@@ -25,6 +25,7 @@ from logging.config import fileConfig, dictConfig
 from Queue import Queue, Empty, Full
 import re
 import smtplib
+from StringIO import StringIO
 import struct
 import sys
 import threading
@@ -33,13 +34,14 @@ import time
 DEFAULT_REJECT_COMMUNITY_PATTERN = "65520:0"
 DEFAULT_REJECT_REASON_COMMUNITY_PATTERN = "^65520:(\d+)$"
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 COPYRIGHT_YEAR = 2017
 
 class UpdatesProcessingThread(threading.Thread):
 
     def __init__(self, updates_q, alerts_queues,
                  reject_comm, reject_reason_comm_pattern,
+                 rejected_route_announced_by_pattern,
                  networks_cfg):
         threading.Thread.__init__(self)
 
@@ -53,6 +55,12 @@ class UpdatesProcessingThread(threading.Thread):
             self.reject_reason_comm_pattern = re.compile(reject_reason_comm_pattern)
         else:
             self.reject_reason_comm_pattern = None
+
+        logging.error(rejected_route_announced_by_pattern)
+        if rejected_route_announced_by_pattern:
+            self.rejected_route_announced_by_pattern = re.compile(rejected_route_announced_by_pattern)
+        else:
+            self.rejected_route_announced_by_pattern = None
 
         self.networks_cfg = networks_cfg
 
@@ -68,7 +76,7 @@ class UpdatesProcessingThread(threading.Thread):
                     return True
         return False
 
-    def get_reject_reason(self, std_comms, lrg_comms, ext_comms):
+    def _extract_val_from_comm(self, std_comms, lrg_comms, ext_comms, re_pattern):
         for fmt in (std_comms, lrg_comms, ext_comms):
             if not fmt or len(fmt) == 0:
                 continue
@@ -77,10 +85,21 @@ class UpdatesProcessingThread(threading.Thread):
                 if comm == self.reject_comm:
                     continue
 
-                match = self.reject_reason_comm_pattern.match(comm)
+                match = re_pattern.match(comm)
 
                 if match:
                     return int(match.group(1))
+
+    def get_reject_reason(self, std_comms, lrg_comms, ext_comms):
+        return self._extract_val_from_comm(std_comms, lrg_comms, ext_comms,
+                                           self.reject_reason_comm_pattern)
+
+    def get_announcing_asn(self, std_comms, lrg_comms, ext_comms):
+        if not self.rejected_route_announced_by_pattern:
+            return
+
+        return self._extract_val_from_comm(std_comms, lrg_comms, ext_comms,
+                                           self.rejected_route_announced_by_pattern)
 
     def get_recipient_ids(self, as_path, next_hop):
         ids = []
@@ -107,7 +126,17 @@ class UpdatesProcessingThread(threading.Thread):
         if self.reject_reason_comm_pattern:
             reject_reason = self.get_reject_reason(std_comms, lrg_comms, ext_comms)
 
+        rejected_route_announced_by_asn = None
+        if self.rejected_route_announced_by_pattern:
+            rejected_route_announced_by_asn = \
+                self.get_announcing_asn(std_comms, lrg_comms, ext_comms)
+
         recipient_ids = self.get_recipient_ids(as_path, next_hop)
+
+        if rejected_route_announced_by_asn:
+            asn = "AS{}".format(rejected_route_announced_by_asn)
+            if asn in self.networks_cfg:
+                recipient_ids.append(asn)
 
         route = {
             "ts": int(time.time()),
@@ -118,6 +147,7 @@ class UpdatesProcessingThread(threading.Thread):
             "lrg_comms": lrg_comms,
             "ext_comms": ext_comms,
             "reject_reason_code": reject_reason,
+            "announced_by": rejected_route_announced_by_asn,
             "recipient_ids": recipient_ids
         }
         logging.debug("Enqueuing route: {}".format(str(route)))
@@ -249,6 +279,9 @@ class NotifierThread(threading.Thread):
         self.reject_reasons = reject_reasons
 
         self.data = {}
+        if not "recipients" in self.cfg:
+            raise ValueError("Missing 'recipients'")
+
         for recipient_id in self.cfg["recipients"]:
             recipient = self.cfg["recipients"][recipient_id]
 
@@ -399,8 +432,11 @@ class EMailNotifierThread(NotifierThread):
             self.password = self.cfg.get("password", None)
             self.subject = self.cfg.get("subject", "Bad routes received!")
 
-            with open(self.template_file, "r") as f:
-                self.template = f.read()
+            if isinstance(self.template_file, StringIO):
+                self.template = self.template_file.read()
+            else:
+                with open(self.template_file, "r") as f:
+                    self.template = f.read()
         except ValueError as e:
             raise ValueError(
                 "Error in the configuration of the alerter: {}".format(
@@ -411,12 +447,16 @@ class EMailNotifierThread(NotifierThread):
         for recipient_id in self.data:
             recipient = self.data[recipient_id]
             try:
+                if "config" not in recipient:
+                    raise ValueError("missing 'config'.")
+                if "info" not in recipient["config"]:
+                    raise ValueError("missing 'info'.")
                 if "email" not in recipient["config"]["info"]:
                     raise ValueError("missing 'email'.")
             except ValueError as e:
                 raise ValueError(
                     "Error in the configuration of recipient '{}': "
-                    "'{}'".format(
+                    "{}".format(
                         recipient_id, str(e)
                     )
                 )
@@ -432,6 +472,8 @@ class EMailNotifierThread(NotifierThread):
             res += " - reject reason: {}\n".format(
                 self.get_reject_reason_descr(route["reject_reason_code"])
             )
+            if route["announced_by"]:
+                res += " - announced by: {}\n".format(route["announced_by"])
         return res
 
     def _connect_smtp(self, force=False):
@@ -471,7 +513,10 @@ class EMailNotifierThread(NotifierThread):
                               exc_info=True)
 
     def _flush_recipient(self, recipient):
-        email_addresses = list(set(recipient["config"]["info"]["email"]))
+        if not isinstance(recipient["config"]["info"]["email"], list):
+            email_addresses = [recipient["config"]["info"]["email"]]
+        else:
+            email_addresses = list(set(recipient["config"]["info"]["email"]))
 
         logging.info("Sending email to {} ({}) for {}".format(
             recipient["id"],
@@ -513,10 +558,10 @@ class LoggerThread(NotifierThread):
                 self.append = False
 
             if "template" in self.cfg:
-                self.template = self.cfg["format"]
+                self.template = self.cfg["template"]
             else:
                 self.template = ("{id},{ts_iso8601},{prefix},{as_path},{next_hop},"
-                                 "{reject_reason_code},{reject_reason}")
+                                 "{reject_reason_code},{reject_reason},{announced_by}")
 
             if len(self.cfg["recipients"]) > 1 and \
                 "*" in self.cfg["recipients"]:
@@ -551,6 +596,10 @@ class LoggerThread(NotifierThread):
 
         return True
 
+    def _write_to_file(self, msg):
+        self.file.write(msg)
+        self.file.flush()
+
     def _flush_recipient(self, recipient):
         if self._open_file():
             for route in recipient["routes"]:
@@ -561,10 +610,10 @@ class LoggerThread(NotifierThread):
                     "id": recipient["id"],
                     "reject_reason": reject_reason,
                     "as_path": " ".join(map(str, data["as_path"])),
-                    "ts_iso8601": datetime.fromtimestamp(data["ts"]).isoformat()
+                    "ts_iso8601": datetime.fromtimestamp(data["ts"]).isoformat(),
+                    "announced_by": data["announced_by"] if data["announced_by"] else ""
                 })
-                self.file.write(self.template.format(**data) + "\n")
-                self.file.flush()
+                self._write_to_file(self.template.format(**data) + "\n")
 
 def read_alerter_config(path):
     try:
@@ -665,10 +714,27 @@ def check_re_pattern(re_pattern_str):
             )
         )
 
+    return re_pattern
+
+def check_re_pattern_reason(re_pattern_str):
+
+    re_pattern = check_re_pattern(re_pattern_str)
+
     if re_pattern.groups != 1:
         raise ValueError(
             "the pattern must contain 1 group to match "
             "the reject reason numerical identifier on "
+            "the last part of any BGP community"
+        )
+
+def check_re_pattern_announcing_asn(re_pattern_str):
+
+    re_pattern = check_re_pattern(re_pattern_str)
+
+    if re_pattern.groups != 1:
+        raise ValueError(
+            "the pattern must contain 1 group to match "
+            "the announcing ASN on "
             "the last part of any BGP community"
         )
 
@@ -720,7 +786,7 @@ def process_exabgp_line(line):
 
 def run(args):
     try:
-        check_re_pattern(args.reject_reason_pattern)
+        check_re_pattern_reason(args.reject_reason_pattern)
     except ValueError as e:
         logging.error("Invalid reject reason BGP community pattern: {}".format(str(e)))
         return False
@@ -729,6 +795,13 @@ def run(args):
     if args.reject_reasons_file:
         reject_reasons = read_reject_reasons(args.reject_reasons_file)
         if not reject_reasons:
+            return False
+
+    if args.rejected_route_announced_by_pattern:
+        try:
+            check_re_pattern_announcing_asn(args.rejected_route_announced_by_pattern)
+        except ValueError as e:
+            logging.error("Invalid announcing ASN BGP community pattern: {}".format(str(e)))
             return False
 
     networks_cfg = read_networks_config(args.networks_config_file)
@@ -773,6 +846,7 @@ def run(args):
     collector = UpdatesProcessingThread(
         updates_q, alerts_queues,
         args.reject_community, args.reject_reason_pattern,
+        args.rejected_route_announced_by_pattern,
         networks_cfg
     )
     collector.start()
@@ -886,10 +960,13 @@ def main():
                     "'reject reason BGP community' using a regular expression "
                     "pattern that matches the 'reason code', and a 'reject "
                     "reasons file' where the mapping between reasons' code "
-                    "and description is provided. BGP communities are "
-                    "represented using - and thus expected to be matched by - "
-                    "the following patterns: 'x:y' (std), 'x:y:z' (lrg), "
-                    "'(rt|ro):x:y' (ext)."
+                    "and description is provided. "
+                    "An optional regular expression pattern can be set to "
+                    "match an additional BGP community used to determine the "
+                    "ASN of the peer that announced the invalid route. "
+                    "BGP communities are represented using - and thus "
+                    "expected to be matched by - the following patterns: "
+                    "'x:y' (std), 'x:y:z' (lrg), '(rt|ro):x:y' (ext)."
     )
 
     default = DEFAULT_REJECT_COMMUNITY_PATTERN
@@ -919,6 +996,15 @@ def main():
              "is provided. If missing, the reject reason "
              "description will be set to 'Reject reason code X'.",
         dest="reject_reasons_file"
+    )
+
+    group.add_argument(
+        "--rejected-route-announced-by-pattern",
+        help="Regular expression pattern used to extract the "
+             "ASN of the network that announced the invalid "
+             "route from the (standard|large|extended) BGP communities. "
+             "Example: rt:65520:(\d+)$",
+        dest="rejected_route_announced_by_pattern"
     )
 
     group = parser.add_argument_group(

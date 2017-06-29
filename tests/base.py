@@ -17,6 +17,23 @@ import json
 import logging
 import unittest
 
+NETWORKS = {
+    "AS1": {
+        "neighbors": ["192.0.2.11", "2001:db8:1:1::11", "192.0.2.12", "2001:db8:1:1::12"]
+    },
+    "AS2": {
+        "neighbors": ["192.0.2.21", "2001:db8:1:1::21"]
+    },
+    "AS3": {
+        "neighbors": ["192.0.2.31", "2001:db8:1:1::31"]
+    },
+    "AS10": {
+    },
+    "AS23" : {
+        "neighbors": ["192.0.2.23"]
+    }
+}
+
 class CaptureLog(logging.Handler):
 
     def __init__(self, *args, **kwargs):
