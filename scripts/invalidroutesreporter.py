@@ -42,6 +42,7 @@ class UpdatesProcessingThread(threading.Thread):
     def __init__(self, updates_q, alerts_queues,
                  reject_comm, reject_reason_comm_pattern,
                  rejected_route_announced_by_pattern,
+                 announcing_asns_only,
                  networks_cfg):
         threading.Thread.__init__(self)
 
@@ -61,6 +62,8 @@ class UpdatesProcessingThread(threading.Thread):
             self.rejected_route_announced_by_pattern = re.compile(rejected_route_announced_by_pattern)
         else:
             self.rejected_route_announced_by_pattern = None
+
+        self.announcing_asns_only = announcing_asns_only
 
         self.networks_cfg = networks_cfg
 
@@ -131,7 +134,10 @@ class UpdatesProcessingThread(threading.Thread):
             rejected_route_announced_by_asn = \
                 self.get_announcing_asn(std_comms, lrg_comms, ext_comms)
 
-        recipient_ids = self.get_recipient_ids(as_path, next_hop)
+        if self.announcing_asns_only:
+            recipient_ids = []
+        else:
+            recipient_ids = self.get_recipient_ids(as_path, next_hop)
 
         if rejected_route_announced_by_asn:
             asn = "AS{}".format(rejected_route_announced_by_asn)
@@ -804,6 +810,11 @@ def run(args):
             logging.error("Invalid announcing ASN BGP community pattern: {}".format(str(e)))
             return False
 
+    if args.announcing_asns_only and not args.rejected_route_announced_by_pattern:
+        logging.error("The --announcing-asns-only option can be set only when "
+                      "the --rejected-route-announced-by-pattern argument is given.")
+        return False
+
     networks_cfg = read_networks_config(args.networks_config_file)
     if not networks_cfg:
         return False
@@ -847,6 +858,7 @@ def run(args):
         updates_q, alerts_queues,
         args.reject_community, args.reject_reason_pattern,
         args.rejected_route_announced_by_pattern,
+        args.announcing_asns_only,
         networks_cfg
     )
     collector.start()
@@ -947,6 +959,15 @@ def main():
         "alerter_config_file",
         nargs="+",
         help="One or more alerter configuration file(s)."
+    )
+    parser.add_argument(
+        "--announcing-asns-only",
+        action="store_true",
+        help="Used only if --rejected-route-announced-by-pattern is given. "
+             "If set, only announcing ASNs will be added to the list of "
+             "the recipients (the lookup on AS_PATH and NEXT_HOP will be "
+             "skipped).",
+        dest="announcing_asns_only"
     )
 
     group = parser.add_argument_group(

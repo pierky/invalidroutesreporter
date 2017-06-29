@@ -48,7 +48,7 @@ So...
 
    If used in conjunction with `ARouteServer`_, the list of codes and their meaning is reported within the `Reject policy and invalid routes tracking <https://arouteserver.readthedocs.io/en/latest/CONFIG.html#reject-policy>`_ section of ARouteServer's docs.
 
-3. For those routes that are tagged with a *reject-community*, it performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
+3. Unless the ``--announcing-asns-only`` command line option has been given, for those routes that are tagged with a *reject-community* the script performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
    The result of this lookup identifies the *recipients* of the alert that will be generated.
 
    .. note:: Please note that this lookup's result does not always determine the real network that announced the invalid route: for example, in case of a network that announces a route with an unauthorized left-most ASN or NEXT_HOP address the result of the lookup will be the networks of which the ASN and the peer's address have been used. Here the *rejected-route-announced-by-community* can help to determine the actual network that announced the route (see the next bullet).

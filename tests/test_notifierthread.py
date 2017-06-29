@@ -87,7 +87,8 @@ class NotifierThreadBaseTestCase(BaseTestCase):
         if self.n:
             self.n.quit_flag = True
 
-    def setup_thread(self, alerter_cfg=None, announced_by_pattern=None):
+    def setup_thread(self, alerter_cfg=None, announced_by_pattern=None,
+                     announcing_asns_only=False):
         default_alerter_cfg = {
             "min_wait": self.min_wait,
             "max_wait": self.max_wait,
@@ -108,6 +109,7 @@ class NotifierThreadBaseTestCase(BaseTestCase):
         self.t = UpdatesProcessingThread(self.updates_q, [self.alert_q],
                                          "65520:0", "^65520:(\d+)$",
                                          announced_by_pattern,
+                                         announcing_asns_only,
                                          NETWORKS)
 
         self.out_q = Queue()
@@ -452,3 +454,17 @@ class LoggerThreadTestCase(NotifierThreadBaseTestCase):
         alert = alerts[0]
         msg = alert["msg"]
         self.assertEqual(msg, "*,1.0.0.0/8,1 2 3,192.0.2.21,1,Reject reason code 1,100\n")
+
+    def test_logger_with_announcing_asn_only(self):
+        """Logger: alert (announcing ASN only)"""
+        cfg = copy.deepcopy(self.ALERTER_CFG)
+        self.setup_thread(alerter_cfg=cfg, announced_by_pattern="^65521:(\d+)$",
+                          announcing_asns_only=True)
+
+        self.add_line("1 2 3", [("192.0.2.21", ["1.0.0.0/8"])], std_comms=[[65520,0], [65520,1], [65521,11]])
+        alerts = self.process_lines()
+
+        self.assertEqual(len(alerts), 1)
+        alert = alerts[0]
+        msg = alert["msg"]
+        self.assertEqual(msg, "*,1.0.0.0/8,1 2 3,192.0.2.21,1,Reject reason code 1,11\n")
