@@ -42,7 +42,7 @@ class UpdatesProcessingThread(threading.Thread):
     def __init__(self, updates_q, alerts_queues,
                  reject_comm, reject_reason_comm_pattern,
                  rejected_route_announced_by_pattern,
-                 announcing_asns_only,
+                 peer_asn_only,
                  networks_cfg):
         threading.Thread.__init__(self)
 
@@ -63,7 +63,7 @@ class UpdatesProcessingThread(threading.Thread):
         else:
             self.rejected_route_announced_by_pattern = None
 
-        self.announcing_asns_only = announcing_asns_only
+        self.peer_asn_only = peer_asn_only
 
         self.networks_cfg = networks_cfg
 
@@ -97,7 +97,7 @@ class UpdatesProcessingThread(threading.Thread):
         return self._extract_val_from_comm(std_comms, lrg_comms, ext_comms,
                                            self.reject_reason_comm_pattern)
 
-    def get_announcing_asn(self, std_comms, lrg_comms, ext_comms):
+    def get_peer_asn(self, std_comms, lrg_comms, ext_comms):
         if not self.rejected_route_announced_by_pattern:
             return
 
@@ -132,9 +132,9 @@ class UpdatesProcessingThread(threading.Thread):
         rejected_route_announced_by_asn = None
         if self.rejected_route_announced_by_pattern:
             rejected_route_announced_by_asn = \
-                self.get_announcing_asn(std_comms, lrg_comms, ext_comms)
+                self.get_peer_asn(std_comms, lrg_comms, ext_comms)
 
-        if self.announcing_asns_only:
+        if self.peer_asn_only:
             recipient_ids = []
         else:
             recipient_ids = self.get_recipient_ids(as_path, next_hop)
@@ -733,14 +733,14 @@ def check_re_pattern_reason(re_pattern_str):
             "the last part of any BGP community"
         )
 
-def check_re_pattern_announcing_asn(re_pattern_str):
+def check_re_pattern_peer_asn(re_pattern_str):
 
     re_pattern = check_re_pattern(re_pattern_str)
 
     if re_pattern.groups != 1:
         raise ValueError(
             "the pattern must contain 1 group to match "
-            "the announcing ASN on "
+            "the peer ASN on "
             "the last part of any BGP community"
         )
 
@@ -805,13 +805,13 @@ def run(args):
 
     if args.rejected_route_announced_by_pattern:
         try:
-            check_re_pattern_announcing_asn(args.rejected_route_announced_by_pattern)
+            check_re_pattern_peer_asn(args.rejected_route_announced_by_pattern)
         except ValueError as e:
-            logging.error("Invalid announcing ASN BGP community pattern: {}".format(str(e)))
+            logging.error("Invalid peer ASN BGP community pattern: {}".format(str(e)))
             return False
 
-    if args.announcing_asns_only and not args.rejected_route_announced_by_pattern:
-        logging.error("The --announcing-asns-only option can be set only when "
+    if args.peer_asn_only and not args.rejected_route_announced_by_pattern:
+        logging.error("The --peer-asn-only option can be set only when "
                       "the --rejected-route-announced-by-pattern argument is given.")
         return False
 
@@ -858,7 +858,7 @@ def run(args):
         updates_q, alerts_queues,
         args.reject_community, args.reject_reason_pattern,
         args.rejected_route_announced_by_pattern,
-        args.announcing_asns_only,
+        args.peer_asn_only,
         networks_cfg
     )
     collector.start()
@@ -961,13 +961,13 @@ def main():
         help="One or more alerter configuration file(s)."
     )
     parser.add_argument(
-        "--announcing-asns-only",
+        "--peer-asn-only",
         action="store_true",
         help="Used only if --rejected-route-announced-by-pattern is given. "
-             "If set, only announcing ASNs will be added to the list of "
+             "If set, only peer ASNs will be added to the list of "
              "the recipients (the lookup on AS_PATH and NEXT_HOP will be "
              "skipped).",
-        dest="announcing_asns_only"
+        dest="peer_asn_only"
     )
 
     group = parser.add_argument_group(

@@ -38,7 +38,7 @@ Example:
 - rejected-route-announced-by-community: ``^rt:65520:(\d+)$``
 - route tagged with: ``65520:0, 65520:7, rt:65520:666``
 - resulting reason code: ``7`` (that, in `ARouteServer`_, it means "Invalid ASN in AS_PATH")
-- resulting announcing ASN: ``666``
+- resulting peer ASN: ``666``
 
 So...
 
@@ -48,7 +48,7 @@ So...
 
    If used in conjunction with `ARouteServer`_, the list of codes and their meaning is reported within the `Reject policy and invalid routes tracking <https://arouteserver.readthedocs.io/en/latest/CONFIG.html#reject-policy>`_ section of ARouteServer's docs.
 
-3. Unless the ``--announcing-asns-only`` command line option has been given, for those routes that are tagged with a *reject-community* the script performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
+3. Unless the ``--peer-asn-only`` command line option has been given, for those routes that are tagged with a *reject-community* the script performs a lookup on a list of *networks* in search of 1) the left-most ASN in the AS_PATH attribute and 2) the IP address used in the NEXT_HOP attribute.
    The result of this lookup identifies the *recipients* of the alert that will be generated.
 
    .. note:: Please note that this lookup's result does not always determine the real network that announced the invalid route: for example, in case of a network that announces a route with an unauthorized left-most ASN or NEXT_HOP address the result of the lookup will be the networks of which the ASN and the peer's address have been used. Here the *rejected-route-announced-by-community* can help to determine the actual network that announced the route (see the next bullet).
@@ -58,7 +58,7 @@ So...
    .. literalinclude:: ../example/networks.json
       :language: json
 
-4. If the *rejected-route-announced-by-community* is configured, the script also tries to extract the announcing ASN from the communities attached to the route. If an ASN is found and it is also present in the *networks* list it is added to the *recipients* of the alert.
+4. If the *rejected-route-announced-by-community* is configured, the script also tries to extract the peer ASN from the communities attached to the route. If an ASN is found and it is also present in the *networks* list it is added to the *recipients* of the alert.
 
 5. For each involved network (*recipients*), the invalid routes collected by the script are added to a buffer; finally, the script triggers some actions on the basis of the *alerters* that have been configured. It can send an email or simply log the route on a file.
 

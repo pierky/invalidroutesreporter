@@ -38,14 +38,14 @@ class UpdatesProcessingThread_BaseTestCase(BaseTestCase):
 
     __test__ = False
 
-    ANNOUNCING_ASNS_ONLY = False
+    PEER_ASN_ONLY = False
 
     def shortDescription(self):
         return self._testMethodDoc
 
     def setup_thread(self, reject_bgp_comm, reject_reason_pattern,
                      rejected_route_announced_by_pattern=None,
-                     announcing_asns_only=None,
+                     peer_asn_only=None,
                      networks=NETWORKS):
         self.updates_q = Queue()
         self.alert_q = Queue()
@@ -53,7 +53,7 @@ class UpdatesProcessingThread_BaseTestCase(BaseTestCase):
         self.t = UpdatesProcessingThread(self.updates_q, [self.alert_q],
                                          reject_bgp_comm, reject_reason_pattern,
                                          rejected_route_announced_by_pattern,
-                                         announcing_asns_only if announcing_asns_only is not None else self.ANNOUNCING_ASNS_ONLY,
+                                         peer_asn_only if peer_asn_only is not None else self.PEER_ASN_ONLY,
                                          networks)
 
     def add_line(self, *args, **kwargs):
@@ -106,7 +106,7 @@ class UpdatesProcessingThread_CommsMatching_TestCase(UpdatesProcessingThread_Bas
     ANNOUNCED_BY_ASN = None
     EXP_RECIPIENTS_ID = ["AS1"]
 
-    ANNOUNCING_ASNS_ONLY = False
+    PEER_ASN_ONLY = False
 
     def _add_lines_comms_matching(self):
         ann_by_std = [self.ANNOUNCED_BY_STD] if self.ANNOUNCED_BY_STD else []
@@ -271,7 +271,7 @@ class UpdatesProcessingThread_CommsMatching_TestCase(UpdatesProcessingThread_Bas
             }
         ])
 
-class UpdatesProcessingThread_CommsMatching_WithAnnouncingASN_TestCase(UpdatesProcessingThread_CommsMatching_TestCase):
+class UpdatesProcessingThread_CommsMatching_WithPeerASN_TestCase(UpdatesProcessingThread_CommsMatching_TestCase):
 
     __test__ = True
 
@@ -287,9 +287,9 @@ class UpdatesProcessingThread_CommsMatching_WithAnnouncingASN_TestCase(UpdatesPr
     EXP_RECIPIENTS_ID = ["AS1", "AS10"]
 
     def shortDescription(self):
-        return self._testMethodDoc + " (with announcing ASN)"
+        return self._testMethodDoc + " (with peer ASN)"
 
-class UpdatesProcessingThread_CommsMatching_WithAnnouncingASNNotInList_TestCase(UpdatesProcessingThread_CommsMatching_TestCase):
+class UpdatesProcessingThread_CommsMatching_WithPeerASNNotInList_TestCase(UpdatesProcessingThread_CommsMatching_TestCase):
 
     __test__ = True
 
@@ -305,19 +305,19 @@ class UpdatesProcessingThread_CommsMatching_WithAnnouncingASNNotInList_TestCase(
     EXP_RECIPIENTS_ID = ["AS1"]
 
     def shortDescription(self):
-        return self._testMethodDoc + " (with announcing ASN not in networks list)"
+        return self._testMethodDoc + " (with peer ASN not in networks list)"
 
-class UpdatesProcessingThread_CommsMatching_WithAnnouncingASN_Only_TestCase(UpdatesProcessingThread_CommsMatching_WithAnnouncingASN_TestCase):
+class UpdatesProcessingThread_CommsMatching_WithPeerASN_Only_TestCase(UpdatesProcessingThread_CommsMatching_WithPeerASN_TestCase):
 
     __test__ = True
 
     EXP_RECIPIENTS_ID = ["AS1", "AS10"]
 
-    ANNOUNCING_ASNS_ONLY = True
+    PEER_ASN_ONLY = True
     EXP_RECIPIENTS_ID = ["AS10"]
 
     def shortDescription(self):
-        return self._testMethodDoc + " (announcing ASN only)"
+        return self._testMethodDoc + " (peer ASN only)"
 
 class UpdatesProcessingThread_Recipients_TestCase(UpdatesProcessingThread_BaseTestCase):
 
@@ -366,25 +366,25 @@ class UpdatesProcessingThread_Recipients_TestCase(UpdatesProcessingThread_BaseTe
         self.add_line("3", [("192.0.2.23", ["2.0.0.0/8"])], std_comms=[[65520,0]])
         self.recipients_match([["AS1", "AS2"], ["AS3", "AS23"]])
 
-    def test_recipients_from_as_path_and_next_hop_different_with_announcing_asn(self):
-        """Recipients from AS_PATH and NEXT_HOP (different) with announcing ASN"""
+    def test_recipients_from_as_path_and_next_hop_different_with_peer_asn(self):
+        """Recipients from AS_PATH and NEXT_HOP (different) with peer ASN"""
         self.setup_thread("65520:0", None, "^43690:(\d+)$")
 
         self.add_line("1 11 111", [("192.0.2.21", ["1.0.0.0/8"])], std_comms=[[65520,0], [43690,10]])
         self.add_line("3", [("192.0.2.23", ["2.0.0.0/8"])], std_comms=[[65520,0], [43690,10]])
         self.recipients_match([["AS1", "AS2", "AS10"], ["AS3", "AS23", "AS10"]])
 
-    def test_recipients_from_as_path_and_next_hop_different_with_announcing_asn_not_in_list(self):
-        """Recipients from AS_PATH and NEXT_HOP (different) with announcing ASN not in networks list"""
+    def test_recipients_from_as_path_and_next_hop_different_with_peer_asn_not_in_list(self):
+        """Recipients from AS_PATH and NEXT_HOP (different) with peer ASN not in networks list"""
         self.setup_thread("65520:0", None, "^43690:(\d+)$")
 
         self.add_line("1 11 111", [("192.0.2.21", ["1.0.0.0/8"])], std_comms=[[65520,0], [43690,100]])
         self.add_line("3", [("192.0.2.23", ["2.0.0.0/8"])], std_comms=[[65520,0], [43690,100]])
         self.recipients_match([["AS1", "AS2"], ["AS3", "AS23"]])
 
-    def test_recipients_from_as_path_and_next_hop_different_with_announcing_asn_only(self):
-        """Recipients from AS_PATH and NEXT_HOP (different), announcing ASN only"""
-        self.setup_thread("65520:0", None, "^43690:(\d+)$", announcing_asns_only=True)
+    def test_recipients_from_as_path_and_next_hop_different_with_peer_asn_only(self):
+        """Recipients from AS_PATH and NEXT_HOP (different), peer ASN only"""
+        self.setup_thread("65520:0", None, "^43690:(\d+)$", peer_asn_only=True)
 
         self.add_line("1 11 111", [("192.0.2.21", ["1.0.0.0/8"])], std_comms=[[65520,0], [43690,10]])
         self.add_line("3", [("192.0.2.23", ["2.0.0.0/8"])], std_comms=[[65520,0], [43690,10]])

@@ -88,7 +88,7 @@ class NotifierThreadBaseTestCase(BaseTestCase):
             self.n.quit_flag = True
 
     def setup_thread(self, alerter_cfg=None, announced_by_pattern=None,
-                     announcing_asns_only=False):
+                     peer_asn_only=False):
         default_alerter_cfg = {
             "min_wait": self.min_wait,
             "max_wait": self.max_wait,
@@ -109,7 +109,7 @@ class NotifierThreadBaseTestCase(BaseTestCase):
         self.t = UpdatesProcessingThread(self.updates_q, [self.alert_q],
                                          "65520:0", "^65520:(\d+)$",
                                          announced_by_pattern,
-                                         announcing_asns_only,
+                                         peer_asn_only,
                                          NETWORKS)
 
         self.out_q = Queue()
@@ -324,7 +324,7 @@ class EMailNotifierThreadTestCase(NotifierThreadBaseTestCase):
         with self.assertRaisesRegexp(ValueError, "Error in the configuration of recipient '\*': missing 'email'."):
             self.setup_thread(alerter_cfg=cfg)
 
-    def test_email_no_announcing_asn(self):
+    def test_email_no_peer_asn(self):
         """EMail notifier: alert"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg)
@@ -347,8 +347,8 @@ class EMailNotifierThreadTestCase(NotifierThreadBaseTestCase):
         self.assertEqual(alert["from_addr"], "rs@acme-ix.tld")
         self.assertEqual(alert["to_addrs"], ["noc@acme-ix.tld"])
 
-    def test_email_with_announcing_asn(self):
-        """EMail notifier: alert (with announcing ASN)"""
+    def test_email_with_peer_asn(self):
+        """EMail notifier: alert (with peer ASN)"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg, announced_by_pattern="^65521:(\d+)$")
 
@@ -367,8 +367,8 @@ class EMailNotifierThreadTestCase(NotifierThreadBaseTestCase):
                           " - announced by:\s10\n$")
         self.assertTrue(patt.search(msg) is not None)
 
-    def test_email_with_announcing_asn_not_in_list(self):
-        """EMail notifier: alert (with announcing ASN not in networks list)"""
+    def test_email_with_peer_asn_not_in_list(self):
+        """EMail notifier: alert (with peer ASN not in networks list)"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg, announced_by_pattern="^65521:(\d+)$")
 
@@ -416,7 +416,7 @@ class LoggerThreadTestCase(NotifierThreadBaseTestCase):
         with self.assertRaisesRegexp(ValueError, "missing 'path' parameter"):
             self.setup_thread(alerter_cfg=cfg)
 
-    def test_logger_no_announcing_asn(self):
+    def test_logger_no_peer_asn(self):
         """Logger: alert"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg)
@@ -429,8 +429,8 @@ class LoggerThreadTestCase(NotifierThreadBaseTestCase):
         msg = alert["msg"]
         self.assertEqual(msg, "*,1.0.0.0/8,1 2 3,192.0.2.21,1,Reject reason code 1,\n")
 
-    def test_logger_with_announcing_asn(self):
-        """Logger: alert (with announcing ASN)"""
+    def test_logger_with_peer_asn(self):
+        """Logger: alert (with peer ASN)"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg, announced_by_pattern="^65521:(\d+)$")
 
@@ -442,8 +442,8 @@ class LoggerThreadTestCase(NotifierThreadBaseTestCase):
         msg = alert["msg"]
         self.assertEqual(msg, "*,1.0.0.0/8,1 2 3,192.0.2.21,1,Reject reason code 1,10\n")
 
-    def test_logger_with_announcing_asn_not_in_list(self):
-        """Logger: alert (with announcing ASN not in networks list)"""
+    def test_logger_with_peer_asn_not_in_list(self):
+        """Logger: alert (with peer ASN not in networks list)"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg, announced_by_pattern="^65521:(\d+)$")
 
@@ -455,11 +455,11 @@ class LoggerThreadTestCase(NotifierThreadBaseTestCase):
         msg = alert["msg"]
         self.assertEqual(msg, "*,1.0.0.0/8,1 2 3,192.0.2.21,1,Reject reason code 1,100\n")
 
-    def test_logger_with_announcing_asn_only(self):
-        """Logger: alert (announcing ASN only)"""
+    def test_logger_with_peer_asn_only(self):
+        """Logger: alert (peer ASN only)"""
         cfg = copy.deepcopy(self.ALERTER_CFG)
         self.setup_thread(alerter_cfg=cfg, announced_by_pattern="^65521:(\d+)$",
-                          announcing_asns_only=True)
+                          peer_asn_only=True)
 
         self.add_line("1 2 3", [("192.0.2.21", ["1.0.0.0/8"])], std_comms=[[65520,0], [65520,1], [65521,11]])
         alerts = self.process_lines()
