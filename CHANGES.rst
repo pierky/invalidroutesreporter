@@ -1,5 +1,12 @@
 Change log
-==========
+++++++++++
+
+v0.2.0
+------
+
+- New: ``--rejected-route-announced-by-pattern`` argument, to track a BGP community set with the peer that actually announced the invalid route.
+
+- New: ``--peer-asn-only`` option, to send alerts only to the peers that announced invalid routes.
 
 v0.1.0
 ------

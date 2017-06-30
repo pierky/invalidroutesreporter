@@ -57,7 +57,6 @@ class UpdatesProcessingThread(threading.Thread):
         else:
             self.reject_reason_comm_pattern = None
 
-        logging.error(rejected_route_announced_by_pattern)
         if rejected_route_announced_by_pattern:
             self.rejected_route_announced_by_pattern = re.compile(rejected_route_announced_by_pattern)
         else:
